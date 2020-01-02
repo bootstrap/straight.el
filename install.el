@@ -74,7 +74,7 @@
   ;; Any errors in this Emacs go directly to the user's init-file and
   ;; abort init. Errors in the child Emacs spawned below create a
   ;; non-zero exit code, and are re-thrown.
-  (let ((min-version "24.4"))
+  (let ((min-version "24.5"))
     (when (version< emacs-version min-version)
       (error (concat "straight.el requires at least Emacs %s, "
                      "but you are running Emacs %s")
@@ -99,7 +99,9 @@
                                straight-profiles
                              '((nil . "default.el"))))
         (straight-install-dir (or (bound-and-true-p straight-base-dir)
-                                  user-emacs-directory)))
+                                  user-emacs-directory))
+        (print-length nil)
+        (print-level nil))
     ;; The only permissible error here is for a lockfile to be absent
     ;; entirely. Anything else triggers an abort so that we don't
     ;; accidentally do something the user doesn't expect (like if they

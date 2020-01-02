@@ -6,7 +6,7 @@
 ;; Created: 1 Jan 2017
 ;; Homepage: https://github.com/raxod502/straight.el
 ;; Keywords: extensions
-;; Package-Requires: ((emacs "24.4"))
+;; Package-Requires: ((emacs "24.5"))
 ;; Version: prerelease
 
 ;;; Commentary:
@@ -207,6 +207,36 @@ profile (nil) will suffice without additional setup."
   :type '(alist :key-type symbol :value-type
                 (alist :key-type symbol :value-type
                        (plist :key-type symbol :value-type sexp))))
+
+(defcustom straight-allow-recipe-inheritance t
+  "Non-nil allows partially overriding recipes.
+If you override a recipe, every component that is not explicitly
+overriden will be searched for in original recipe. If found, that
+value will be added to the overriden recipe. This allows you to
+only override the recipe components you are interested in,
+instead of being required to override them all. The supported
+components are the ones listed by `straight-vc-git-keywords' and
+`:files'. Note that enabling this feature has the side effect
+that all recipe repos (i.e. melpa, elpa) will always be cloned,
+even if you explicitly specify all your recipes.
+
+The `:fork' keyword is handled specially. If its value is a
+string instead of a list, then it is assigned as the `:repo' of
+the fork. Also the fork recipe will inherit its `:host' component
+from the default recipe.
+
+For example, the following are all equivalent with recipe
+inheritance enabled.
+
+\\='(package :host \\='gitlab :repo \"other-user/repo\"
+          :fork (:host \\='gitlab :repo \"my-user/repo\"))
+
+\\='(package :fork (:host \\='gitlab :repo \"my-user/repo\"))
+
+\\='(package :fork (:repo \"my-user/repo\"))
+
+\\='(package :fork \"my-user/repo\")"
+  :type 'boolean)
 
 (defcustom straight-safe-mode nil
   "Non-nil means avoid doing anything that modifies the filesystem.
@@ -442,22 +472,22 @@ also `straight--progress-begin' and `straight--progress-end'."
              (straight--output "%s..." ,task-car-sym))
            (progn
              ,@body)
-         (when (and ,task-cdr-sym (not noninteractive))
-           (message "%s...done" ,task-cdr-sym))))))
+         (when ,task-cdr-sym
+           (straight--output "%s...done" ,task-cdr-sym))))))
 
 (defun straight--progress-begin (message)
   "Display a MESSAGE indicating ongoing progress.
 The MESSAGE is postpended with \"...\" and then passed to
 `message'. See also `straight--with-progress' and
 `straight--progress-end'."
-  (message "%s..." message))
+  (straight--output "%s..." message))
 
 (defun straight--progress-end (message)
   "Display a MESSAGE indicating completed progress.
 The MESSAGE is postpended with \"...done\" and then passed to
 `message'. See also `straight--with-progress' and
 `straight--progress-begin'."
-  (message "%s...done" message))
+  (straight--output "%s...done" message))
 
 (defvar straight--echo-area-dirty nil
   "Non-nil if a progress message has been wiped from the echo area.
@@ -491,7 +521,7 @@ The warning message is obtained by passing MESSAGE and ARGS to
 
 (defun straight--windows-os-p ()
   "Check if the current operating system is Windows."
-  (memq system-type '(ms-dos windows-nt cygwin)))
+  (memq system-type '(ms-dos windows-nt)))
 
 ;;;;; Paths
 
@@ -1004,15 +1034,18 @@ cdrs are their END-FUNCs.
 
 If nil, no transaction is not live.")
 
-(defun straight--transaction-finalize-on-idle ()
-  "Schedule to finalize the current transaction on Emacs idle.
+(defun straight--transaction-finalize-at-top-level ()
+  "Schedule to finalize the current transaction when appropriate.
 This means that `straight--transaction-finalize' will be invoked
-using an idle timer. In batch mode, the transaction is finalized
-using `kill-emacs-hook' rather than an idle timer (because idle
-timers are not run in batch mode)."
+on `post-command-hook', and it will wait until control is
+returned to the top level before actually finalizing the
+transaction and removing itself from the hook again. In batch
+mode, the transaction is finalized using `kill-emacs-hook' rather
+than `post-command-hook' (because idle timers are not run in
+batch mode)."
   (if noninteractive
       (add-hook 'kill-emacs-hook #'straight--transaction-finalize)
-    (run-with-idle-timer 0 nil #'straight--transaction-finalize)))
+    (add-hook 'post-command-hook #'straight--transaction-finalize)))
 
 (defun straight--transaction-finalize ()
   "Finalize the current transaction.
@@ -1022,16 +1055,13 @@ the functions recorded in it."
   ;; transaction yet. Instead, arrange to schedule another idle timer
   ;; once the user exits the recursive edit via one of the functions
   ;; listed below.
-  (if (zerop (recursion-depth))
-      (let ((alist straight--transaction-alist))
-        (setq straight--transaction-alist nil)
-        (dolist (func '(exit-recursive-edit abort-recursive-edit top-level))
-          (advice-remove func #'straight--transaction-finalize-on-idle))
-        (dolist (end-func (mapcar #'cdr alist))
-          (when end-func
-            (funcall end-func))))
-    (dolist (func '(exit-recursive-edit abort-recursive-edit top-level))
-      (advice-add func :before #'straight--transaction-finalize-on-idle))))
+  (when (zerop (recursion-depth))
+    (let ((alist straight--transaction-alist))
+      (setq straight--transaction-alist nil)
+      (remove-hook 'post-command-hook #'straight--transaction-finalize)
+      (dolist (end-func (mapcar #'cdr alist))
+        (when end-func
+          (funcall end-func))))))
 
 (cl-defun straight--transaction-exec (id &key now later manual)
   "Execute functions within a transaction.
@@ -1051,64 +1081,13 @@ transaction. In this case, the caller must do this itself."
   ;; started a transaction, but haven't yet finalized it. Don't
   ;; schedule more idle timers.
   (unless (or manual straight--transaction-alist)
-    (straight--transaction-finalize-on-idle))
+    (straight--transaction-finalize-at-top-level))
   (unless (assq id straight--transaction-alist)
     ;; Push to start of list. At the end, we'll read forward, thus in
     ;; reverse order.
     (push (cons id later) straight--transaction-alist)
     (when now
       (funcall now))))
-
-(defun straight-begin-transaction ()
-  "Deprecated no-op. Transactions are now handled transparently.
-To update your code, simply remove all references to
-`straight-transaction', `straight-begin-transaction',
-`straight-finalize-transaction',
-`straight-mark-transaction-as-init', and
-`straight-treat-as-init'. Everything will work as it did before."
-  (message "straight.el: `straight-begin-transaction' is no longer needed"))
-
-(defun straight-finalize-transaction ()
-  "Deprecated no-op. Transactions are now handled transparently.
-To update your code, simply remove all references to
-`straight-transaction', `straight-begin-transaction',
-`straight-finalize-transaction',
-`straight-mark-transaction-as-init', and
-`straight-treat-as-init'. Everything will work as it did before."
-  (message "straight.el: `straight-finalize-transaction' is no longer needed"))
-
-(defmacro straight-transaction (&rest body)
-  "Deprecated `progn' alias. Transactions are now handled transparently.
-To update your code, simply remove all references to
-`straight-transaction', `straight-begin-transaction',
-`straight-finalize-transaction',
-`straight-mark-transaction-as-init', and
-`straight-treat-as-init'. Everything will work as it did before.
-
-As in `progn', execute BODY and return the value of its last
-form, or nil."
-  `(progn
-     (message "straight.el: `straight-transaction' is no longer needed")
-     ,@(or body '(nil))))
-
-(defun straight-mark-transaction-as-init ()
-  "Deprecated no-op. Transactions are now handled transparently.
-To update your code, simply remove all references to
-`straight-transaction', `straight-begin-transaction',
-`straight-finalize-transaction',
-`straight-mark-transaction-as-init', and
-`straight-treat-as-init'. Everything will work as it did before."
-  (message
-   "straight.el: `straight-mark-transaction-as-init' is no longer needed"))
-
-(defvar straight-treat-as-init nil
-  "Deprecated variable with no effect on anything.
-Transactions are now handled transparently. To update your code,
-simply remove all references to `straight-transaction',
-`straight-begin-transaction', `straight-finalize-transaction',
-`straight-mark-transaction-as-init', and
-`straight-treat-as-init'. Everything will work as it did
-before.")
 
 (defun straight-interactive-transaction ()
   "Start a recursive edit within a transaction."
@@ -1127,6 +1106,10 @@ This uses -newermt if possible, and -newer otherwise."
        "find" "/dev/null" "-newermt" "2018-01-01 12:00:00")
       `(newermt)
     nil))
+
+(defcustom straight-find-executable "find"
+  "Executable path of find command used by straight.el."
+  :type 'string)
 
 (defcustom straight-find-flavor (straight--determine-find-flavor)
   "What options the available find(1) binary supports.
@@ -2699,7 +2682,7 @@ This is a list of strings."
 
 (defun straight-recipes-gnu-elpa-mirror-version ()
   "Return the current version of the GNU ELPA mirror retriever."
-  2)
+  3)
 
 ;;;;;;; GNU ELPA source
 
@@ -2733,7 +2716,7 @@ Otherwise, return nil."
 
 (defun straight-recipes-gnu-elpa-version ()
   "Return the current version of the GNU ELPA retriever."
-  1)
+  2)
 
 ;;;;;; Emacsmirror
 
@@ -2913,6 +2896,29 @@ for dependency resolution."
           ;; override the default value (which is determined according
           ;; to the selected VC backend).
           ;;
+          (when straight-allow-recipe-inheritance
+            ;; To keep overridden recipes simple, Some keywords can be
+            ;; inherited from the original recipe. This is done by
+            ;; looking in original and finding all keywords that are
+            ;; not present in the override and adding them there.
+            (let ((fork (plist-get plist :fork)))
+              (when (stringp fork)
+                (straight--put plist :fork `(:repo ,fork))))
+            (let* ((default (cdr (straight-recipes-retrieve package)))
+                   (keywords (straight-vc-keywords
+                              (or (plist-get default :type) 'git))))
+              (dolist (keyword (cons :files keywords))
+                (if (eq keyword :fork)
+                    (dolist (keyword keywords)
+                      (let ((fork-plist (plist-get plist :fork))
+                            (value (plist-get default keyword)))
+                        (when (and value fork-plist
+                                   (not (plist-member fork-plist keyword)))
+                          (straight--put
+                           plist :fork (plist-put fork-plist keyword value)))))
+                  (let ((value (plist-get default keyword)))
+                    (when (and value (not (plist-member plist keyword)))
+                      (straight--put plist keyword value)))))))
           ;; The normalized recipe format will have the package name
           ;; as a string, not a symbol.
           (let ((package (symbol-name package)))
@@ -3272,7 +3278,7 @@ empty values (all packages will be rebuilt, with no caching)."
                    (symbolp version)
                    (or (eq version straight--build-cache-version)
                        (prog1 (setq malformed nil)
-                         (message
+                         (straight--output
                           (concat
                            "Rebuilding all packages due to "
                            "build cache schema change"))))
@@ -3281,7 +3287,7 @@ empty values (all packages will be rebuilt, with no caching)."
                    (stringp last-emacs-version)
                    (or (string= last-emacs-version emacs-version)
                        (prog1 (setq malformed nil)
-                         (message
+                         (straight--output
                           (concat
                            "Rebuilding all packages due to "
                            "change in Emacs version"))))
@@ -3299,7 +3305,8 @@ empty values (all packages will be rebuilt, with no caching)."
                    (eq use-symlinks straight-use-symlinks))
             ;; If anything is wrong, abort and use the default values.
             (when malformed
-              (message "Rebuilding all packages due to malformed build cache"))
+              (straight--output
+               "Rebuilding all packages due to malformed build cache"))
             (setq needs-immediate-save t)
             (error "Malformed or outdated build cache"))
           ;; Otherwise, we can load from disk.
@@ -3481,11 +3488,11 @@ If it fails, signal a warning and return nil."
        "Cannot start filesystem watcher without 'watchexec' installed")
       (cl-return-from straight-watcher-start))
     (when (straight-watcher--virtualenv-outdated)
-      (message "Setting up filesystem watcher...")
+      (straight--output "Setting up filesystem watcher...")
       (unless (straight-watcher--virtualenv-setup)
-        (message "Setting up filesystem watcher...failed")
+        (straight--output "Setting up filesystem watcher...failed")
         (cl-return-from straight-watcher-start))
-      (message "Setting up filesystem watcher...done"))
+      (straight--output "Setting up filesystem watcher...done"))
     (with-current-buffer (straight-watcher--make-process-buffer)
       (let* ((python (straight--watcher-python))
              (cmd (list
@@ -3576,9 +3583,8 @@ modified since their last builds.")
                     (setq args-primaries
                           (append (list "-o"
                                         "-path"
-                                        (format
-                                         "%s/*" (straight--repos-dir
-                                                 local-repo))
+                                        (expand-file-name
+                                         "*" (straight--repos-dir local-repo))
                                         newer-or-newermt
                                         mtime-or-file
                                         "-print")
@@ -3601,19 +3607,19 @@ modified since their last builds.")
                 args-paths
                 (list "-name" ".git" "-prune")
                 args-primaries))
-    (with-temp-buffer
-      (let ((default-directory (straight--repos-dir)))
-        (apply #'straight--get-call "find" args)
-        (maphash (lambda (local-repo _)
-                   (goto-char (point-min))
-                   (puthash
-                    local-repo (re-search-forward
-                                (format "^%s/"
-                                        (regexp-quote
-                                         (straight--repos-dir local-repo)))
-                                nil 'noerror)
-                    straight--cached-package-modifications))
-                 repos)))))
+    (let* ((default-directory (straight--repos-dir))
+           (results (apply #'straight--get-call
+                           straight-find-executable args)))
+      (maphash (lambda (local-repo _)
+                 (puthash
+                  local-repo (string-match-p
+                              (concat "^"
+                                      (regexp-quote
+                                       (file-name-as-directory
+                                        (straight--repos-dir local-repo))))
+                              results)
+                  straight--cached-package-modifications))
+               repos))))
 
 (defun straight--uncache-package-modifications ()
   "Reset `straight--cached-package-modifications'."
@@ -3689,17 +3695,19 @@ last time."
                         (setq mtime-or-file
                               (straight--make-mtime last-mtime)))
                       (let* ((default-directory
-                               (straight--repos-dir local-repo)))
-                        ;; This find(1) command ignores the .git
-                        ;; directory, and prints the names of any
-                        ;; files or directories with a newer mtime
-                        ;; than the one specified.
-                        (straight--get-call
-                         "find" "." "-name" ".git" "-prune"
-                         "-o" newer-or-newermt mtime-or-file "-print")
+                               (straight--repos-dir local-repo))
+                             ;; This find(1) command ignores the .git
+                             ;; directory, and prints the names of any
+                             ;; files or directories with a newer
+                             ;; mtime than the one specified.
+                             (results (straight--get-call
+                                       straight-find-executable
+                                       "." "-name" ".git" "-prune"
+                                       "-o" newer-or-newermt mtime-or-file
+                                       "-print")))
                         ;; If anything was printed, the package has
                         ;; (maybe) been modified.
-                        (> (buffer-size) 0)))))))))))
+                        (not (string-empty-p results))))))))))))
 
 ;;;; Building packages
 ;;;;; Files directive processing
@@ -3973,7 +3981,8 @@ See `straight-symlink-emulation-mode'."
              (with-temp-buffer
                (insert-file-contents-literally link-record)
                (buffer-string)))
-          (message "Broken symlink, you are not editing the real file"))))))
+          (straight--output
+           "Broken symlink, you are not editing the real file"))))))
 
 (define-minor-mode straight-symlink-emulation-mode
   "Minor mode for emulating symlinks in the software layer.
@@ -4094,7 +4103,10 @@ modifies the build folder, not the original repository."
           ;; good reason, so I just copied them here. It's a shame
           ;; that Emacs activates so many random features even when
           ;; you are accessing files programmatically.
-          (noninteractive t)
+          ;;
+          ;; Note: we used to bind `noninteractive', like package.el,
+          ;; but apparently that code was a bug in package.el. Sigh.
+          ;; See <https://github.com/raxod502/straight.el/issues/431>.
           (backup-inhibited t)
           (version-control 'never)
           ;; Tell Emacs to shut up.
@@ -4204,8 +4216,18 @@ repository."
 
 (defun straight--format-timestamp (&optional timestamp)
   "Format an Elisp TIMESTAMP for the operating system.
-See `format-time-string' for the format of TIMESTAMP."
-  (format-time-string "%F %T" timestamp))
+See `format-time-string' for the format of TIMESTAMP. The
+formatted string does not include millisecond precision because
+this is not supported by find(1) commands on all operating
+systems (thanks, Apple). Therefore, to avoid spurious rebuilds,
+the time is rounded up to the next second."
+  (format-time-string
+   "%F %T" (time-add
+            ;; Default is needed for Emacs 24.5 due to bad design.
+            (or timestamp (current-time))
+            ;; This format instead of just the integer 1 is needed for
+            ;; Emacs 24.5 due to bad design.
+            '(0 1))))
 
 (defun straight--declare-successful-build (recipe)
   "Update `straight--build-cache' to reflect a successful build of RECIPE.
@@ -4590,7 +4612,7 @@ action, just return it)."
       (pcase action
         (`insert (insert (format "%S" recipe)))
         (`copy (kill-new (format "%S" recipe))
-               (message "Copied \"%S\" to kill ring" recipe))
+               (straight--output "Copied \"%S\" to kill ring" recipe))
         (_ recipe)))))
 
 ;;;;; Jump to package website
@@ -4827,7 +4849,7 @@ otherwise (this can only happen if NO-CLONE is non-nil)."
              ;; In interactive use, tell the user how to install
              ;; packages permanently.
              (when (and interactive (not already-registered))
-               (message
+               (straight--output
                 (concat "If you want to keep %s, put "
                         "(straight-use-package %s%S) "
                         "in your init-file.")
@@ -5270,9 +5292,9 @@ If not, prompt the user to reload the init-file."
     (cl-return-from straight--ensure-profile-cache-valid t))
   (unless (y-or-n-p "Caches are outdated, reload init-file? ")
     (cl-return-from straight--ensure-profile-cache-valid nil))
-  (message "Reloading %S..." user-init-file)
+  (straight--output "Reloading %S..." user-init-file)
   (load user-init-file nil 'nomessage)
-  (message "Reloading %S...done" user-init-file)
+  (straight--output "Reloading %S...done" user-init-file)
   (when straight--profile-cache-valid
     (cl-return-from straight--ensure-profile-cache-valid t))
   (error "Caches are still outdated; something is seriously wrong"))
@@ -5362,7 +5384,7 @@ according to the value of `straight-profiles'."
                (apply-partially #'format "%S")
                versions-alist
                "\n "))))
-          (message "Wrote %s" lockfile-path))))))
+          (straight--output "Wrote %s" lockfile-path))))))
 
 ;;;###autoload
 (defun straight-thaw-versions ()

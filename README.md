@@ -167,8 +167,9 @@ chat][gitter-badge]][gitter]
 
 ## Getting started
 
-> **Note: `straight.el` supports a minimum version of Emacs 24.4, and
-> works on macOS, Windows, and most flavors of Linux.**
+> **Note: `straight.el` supports a minimum version of Emacs 24.5, and
+> works on macOS, Windows, and most flavors of Linux. You must install
+> [Git] in order to use `straight.el`.**
 
 First, place the following bootstrap code in your init-file:
 
@@ -1428,6 +1429,24 @@ will be looked up by default (see the section on [recipe
 lookup][#user/lookup]). You can see the default recipe for a package
 by invoking [`M-x straight-get-recipe`][#user/interactive].
 
+If `straight-allow-recipe-inheritance` is non-nil, then you only need
+to specify the components of the recpie that you want to override. All
+other components will still be looked up in the default recipe. In the
+example above, we are only interested in changing the `:fork`
+component. Therefore if `straight-allow-recipe-inheritance` is set,
+the recipe could be simplifed as follows:
+
+    (straight-use-package
+     '(el-patch :fork (:repo "your-name/el-patch")))
+
+or even simpler:
+
+    (straight-use-package
+     '(el-patch :fork "your-name/el-patch"))
+
+The `:files` keyword and all version control keywords support
+inheritance.
+
 To learn more, see the section on [the recipe format][#user/recipes].
 
 #### Additional arguments to `straight-use-package`
@@ -1496,7 +1515,9 @@ packages are then rebuilt when they are requested via
 `straight-use-package`. Normally, `straight.el` will try to detect
 what sort of `find(1)` program is installed, and issue the appropriate
 command. If it makes a mistake, then you can manually customize
-`straight-find-flavor`.
+`straight-find-flavor`. Alternately, you can install GNU find and
+customize the variable `straight-find-executable` to point to it.
+
 
 For about 100 packages on an SSD, calling `find(1)` to detect
 modifications takes about 500ms. You can save this time by customizing
@@ -2537,6 +2558,10 @@ it to install Org. This functionality is implemented using
 can disable it by setting the value of the variable `straight-fix-org`
 to nil.
 
+Please be careful with setting `straight-vc-git-default-clone-depth`,
+which may break some packages' installing processes such as `elfeed`
+that depend on `org`.
+
 #### Integration with Hydra
 
 See [the Hydra wiki][hydra-wiki-straight-entry].
@@ -2617,7 +2642,9 @@ branch in any fork:
     (setq straight-repository-branch "feat/my-cool-feature")
 
 Please try to follow the style of the surrounding code and
-documentation, but anything is welcome.
+documentation, but anything is welcome. All text, including comments
+and docstrings, should be formatted using Emacs' `M-x fill-paragraph`
+command (bound to `M-q` by default).
 
 We require that the linting pass on all new commits. You can check
 this easily by installing [Docker] and running
@@ -2963,6 +2990,7 @@ Note that the user option must be customized *before* the
 [emacswiki]: https://www.emacswiki.org/
 [epkg]: https://github.com/emacscollective/epkg
 [epkgs]: https://github.com/emacsmirror/epkgs
+[git]: https://git-scm.com/
 [git-credential-cache]: https://git-scm.com/docs/git-credential-cache
 [gitter-badge]: https://badges.gitter.im/raxod502/straight.el.svg
 [gitter]: https://gitter.im/raxod502/straight.el
